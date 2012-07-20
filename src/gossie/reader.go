@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/carloscm/gossie/src/cassandra"
 	"github.com/pomack/thrift4go/lib/go/src/thrift"
+	"fmt"
 )
 
 /*
@@ -19,6 +20,18 @@ type Column struct {
 	Ttl       int32
 	Timestamp int64
 }
+func (c *Column) String() string {
+	return fmt.Sprintf("%s: %s", c.Name, c.Value)
+}
+
+type SuperRow struct {
+	Key     []byte
+	Rows []*Row
+}
+
+func (r *SuperRow) String() string {
+	return fmt.Sprintf("%s: %v", r.Key, r.Rows)
+}
 
 // Row is a Cassandra row, including its row key
 type Row struct {
@@ -26,6 +39,9 @@ type Row struct {
 	Columns []*Column
 }
 
+func (r *Row) String() string {
+	return fmt.Sprintf("%s: %v", r.Key, r.Columns)
+}
 // RowColumnCount stores the number of columns matched in a MultiCount reader
 type RowColumnCount struct {
 	Key   []byte
@@ -100,6 +116,9 @@ type Reader interface {
 
 	// Get looks up a row with the given key and returns it, or nil in case it is not found
 	Get(key []byte) (*Row, error)
+
+	// Gets a SuperColumn, a rather shameful interface for it
+	SuperGet(key []byte) (*SuperRow, error)
 
 	// MultiGet performs a parallel Get operation for all the passed keys, and returns a slice of
 	// RowColumnCounts pointers to the gathered rows, which may be empty if none were found. It returns
@@ -278,6 +297,34 @@ func (r *reader) Get(key []byte) (*Row, error) {
 	return rowFromTListColumns(key, ret), nil
 }
 
+
+func (r *reader) SuperGet(key []byte) (*SuperRow, error) {
+	if r.cf == "" {
+		return nil, errors.New("No column family specified")
+	}
+
+	cp := r.buildColumnParent()
+	sp := r.buildPredicate()
+	var ret thrift.TMap
+	var keys thrift.TList = thrift.NewTList(thrift.BINARY, 0) // size appears to be ignored in the thrift lib
+	keys.Push(key)
+	err := r.pool.run(func(c *connection) (*cassandra.InvalidRequestException, *cassandra.UnavailableException, *cassandra.TimedOutException, error) {
+		var ire *cassandra.InvalidRequestException
+		var ue *cassandra.UnavailableException
+		var te *cassandra.TimedOutException
+		var err error
+		
+		ret, ire, ue, te, err = c.client.MultigetSlice(keys, cp, sp, cassandra.ConsistencyLevel(r.consistencyLevel))
+		return ire, ue, te, err
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	
+	return rowFromTMapColumns(key, ret), nil	
+}
+
 func (r *reader) Count(key []byte) (int, error) {
 	if r.cf == "" {
 		return 0, errors.New("No column family specified")
@@ -433,6 +480,37 @@ func (r *reader) IndexedGet(rang *IndexedRange) ([]*Row, error) {
 	}
 
 	return rowsFromTListKeySlice(ret), nil
+}
+
+func rowFromTMapColumns(key []byte, tm thrift.TMap) *SuperRow {
+	if tm == nil || tm.Len() <= 0 {
+		return nil
+	}
+	r := &SuperRow{Key: key}
+	
+	for ele := range tm.Iter() {
+		//fmt.Printf("K: %s V: %+v %T\n", ele.Key(), ele.Value(), ele.Value())
+		tl := ele.Value().(thrift.TList)
+		for colI := range tl.Iter() {
+			var col *cassandra.ColumnOrSuperColumn = colI.(*cassandra.ColumnOrSuperColumn)
+			row := &Row{Key: col.SuperColumn.Name}
+			r.Rows = append(r.Rows, row)
+			//fmt.Printf("\tSCName: %s\n", col.SuperColumn.Name)
+			//fmt.Printf("Columns: %+v %T\n", col.SuperColumn.Columns, col.SuperColumn.Columns)
+			for colX := range col.SuperColumn.Columns.Iter() {
+				theRealCol := colX.(*cassandra.Column)
+				c := &Column{
+					Name:      theRealCol.Name,
+					Value:     theRealCol.Value,
+					Timestamp: theRealCol.Timestamp,
+					Ttl:       theRealCol.Ttl,
+				}
+				row.Columns = append(row.Columns, c)				
+				//fmt.Printf("\t\tcol: %s %s\n",theRealCol.Name, theRealCol.Value)
+			}
+		}
+	}
+	return r
 }
 
 func rowFromTListColumns(key []byte, tl thrift.TList) *Row {
