@@ -2,9 +2,9 @@ package gossie
 
 import (
 	"errors"
+	"fmt"
 	"github.com/carloscm/gossie/src/cassandra"
 	"github.com/pomack/thrift4go/lib/go/src/thrift"
-	"fmt"
 )
 
 /*
@@ -20,12 +20,13 @@ type Column struct {
 	Ttl       int32
 	Timestamp int64
 }
+
 func (c *Column) String() string {
 	return fmt.Sprintf("%s: %s", c.Name, c.Value)
 }
 
 type SuperRow struct {
-	Key     []byte
+	Key  []byte
 	Rows []*Row
 }
 
@@ -42,6 +43,7 @@ type Row struct {
 func (r *Row) String() string {
 	return fmt.Sprintf("%s: %v", r.Key, r.Columns)
 }
+
 // RowColumnCount stores the number of columns matched in a MultiCount reader
 type RowColumnCount struct {
 	Key   []byte
@@ -297,7 +299,6 @@ func (r *reader) Get(key []byte) (*Row, error) {
 	return rowFromTListColumns(key, ret), nil
 }
 
-
 func (r *reader) SuperGet(key []byte) (*SuperRow, error) {
 	if r.cf == "" {
 		return nil, errors.New("No column family specified")
@@ -313,7 +314,7 @@ func (r *reader) SuperGet(key []byte) (*SuperRow, error) {
 		var ue *cassandra.UnavailableException
 		var te *cassandra.TimedOutException
 		var err error
-		
+
 		ret, ire, ue, te, err = c.client.MultigetSlice(keys, cp, sp, cassandra.ConsistencyLevel(r.consistencyLevel))
 		return ire, ue, te, err
 	})
@@ -321,8 +322,8 @@ func (r *reader) SuperGet(key []byte) (*SuperRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	
-	return rowFromTMapColumns(key, ret), nil	
+
+	return rowFromTMapColumns(key, ret), nil
 }
 
 func (r *reader) Count(key []byte) (int, error) {
@@ -487,7 +488,7 @@ func rowFromTMapColumns(key []byte, tm thrift.TMap) *SuperRow {
 		return nil
 	}
 	r := &SuperRow{Key: key}
-	
+
 	for ele := range tm.Iter() {
 		//fmt.Printf("K: %s V: %+v %T\n", ele.Key(), ele.Value(), ele.Value())
 		tl := ele.Value().(thrift.TList)
@@ -505,7 +506,7 @@ func rowFromTMapColumns(key []byte, tm thrift.TMap) *SuperRow {
 					Timestamp: theRealCol.Timestamp,
 					Ttl:       theRealCol.Ttl,
 				}
-				row.Columns = append(row.Columns, c)				
+				row.Columns = append(row.Columns, c)
 				//fmt.Printf("\t\tcol: %s %s\n",theRealCol.Name, theRealCol.Value)
 			}
 		}
